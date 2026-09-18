@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedVoice – Scanner & Simplifier</title>
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background: #f4f9f9; }
+        button { padding: 15px 30px; font-size: 20px; border: none; border-radius: 10px; cursor: pointer; margin: 8px; }
+        .scan-btn { background: #007bff; color: white; }
+        .upload-btn { background: #ff9800; color: white; }
+        .sample-btn { background: #28a745; color: white; }
+        .lang-btn { background: #6f42c1; color: white; }
+        #output { margin-top: 20px; white-space: pre-wrap; text-align: left; background: white; padding: 15px; border-radius: 10px; font-size: 16px; }
+        video { width: 100%; max-width: 400px; border-radius: 10px; }
+        .normal { color: green; }
+        .high { color: red; }
+        .low { color: orange; }
+        .critical { color: white; background: #dc3545; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
+        .critical-alert { background: #fff3f3; border-left: 4px solid #dc3545; padding: 10px; margin: 10px 0; animation: blink 1s infinite; }
+        .danger-note { color: #dc3545; font-weight: bold; }
+        .notfound { color: gray; }
+        .debug { background: #eee; padding: 10px; margin-top: 10px; font-family: monospace; }
+        @keyframes blink { 0% {opacity: 1;} 50% {opacity: 0.5;} 100% {opacity: 1;} }
+    </style>
+</head>
+<body>
+    <h1>🩺 MedVoice Scanner</h1>
+    <p>Place the report in front of the camera, upload an image, or load a sample.</p>
+    <video id="video" autoplay playsinline></video>
+    <br><br>
+    <button class="scan-btn" onclick="captureAndScan()">📸 Scan from Webcam</button>
+    <button class="upload-btn" onclick="document.getElementById('fileInput').click()">📁 Upload Report Image</button>
+    <input type="file" id="fileInput" accept="image/*" style="display:none;" onchange="handleFileUpload(event)">
+    <button class="sample-btn" onclick="loadSample()">📋 Load Sample Report</button>
+    <div id="output">Results will appear here...</div>
+
+    <script>
+        const video = document.getElementById('video');
+        const output = document.getElementById('output');
+        const fileInput = document.getElementById('fileInput');
+        let stream;
+
+        // ---------- KNOWLEDGE BASE (with critical thresholds & explanations) ----------
+        const knowledge = [
+            {
+                aliases: ['haemoglobin', 'hb', 'hemoglobin'],
+                unit: 'g/dL', min: 12.0, max: 16.0, criticalLow: 7.0, criticalHigh: 20.0,
+                displayName: 'Haemoglobin',
+                explainLow: "Low haemoglobin means you have anaemia. This can make you feel tired, weak, or dizzy. It may be due to iron deficiency, blood loss, or poor nutrition. Please consult your doctor.",
+                explainHigh: "High haemoglobin can happen due to dehydration, smoking, or living at high altitudes. In some cases, it could signal a bone marrow problem. Please discuss this with your doctor.",
+                dangerNote: "Severe anaemia can strain your heart. Do not ignore this."
+            },
+            {
+                aliases: ['wbc', 'white blood cell', 'leukocyte', 'total wbc count'],
+                unit: '/μL', min: 4000, max: 10000, criticalLow: 2000, criticalHigh: 30000,
+                displayName: 'WBC Count',
+                explainLow: "A low white blood cell count can weaken your immune system, making you more likely to get infections. It may be caused by medications, viral infections, or bone marrow issues.",
+                explainHigh: "A high white blood cell count usually means your body is fighting an infection or inflammation. In some cases, it could indicate a more serious condition. Please inform your doctor.",
+                dangerNote: "A very low WBC count can be dangerous if you catch an infection. Take precautions."
+            },
+            {
+                aliases: ['fasting glucose', 'fbs', 'glucose', 'blood sugar', 'sugar'],
+                unit: 'mg/dL', min: 70, max: 100, criticalLow: 50, criticalHigh: 250,
+                displayName: 'Fasting Glucose',
+                explainLow: "Low blood sugar can cause shakiness, sweating, confusion, and fainting. It may happen if you skipped a meal or took too much diabetes medication.",
+                explainHigh: "High fasting blood sugar is a sign of pre-diabetes or diabetes. If not controlled, it can damage your eyes, kidneys, and nerves over time. Please ask your doctor about diet, exercise, and medication.",
+                dangerNote: "Very low blood sugar can lead to loss of consciousness. Seek help immediately."
+            },
+            {
+                aliases: ['creatinine', 'creat', 'kidney'],
+                unit: 'mg/dL', min: 0.6, max: 1.2, criticalLow: 0.2, criticalHigh: 5.0,
+                displayName: 'Creatinine',
+                explainLow: "Low creatinine is usually not a concern. It may simply mean you have less muscle mass, or it could be related to your diet.",
+                explainHigh: "High creatinine suggests your kidneys may not be filtering waste properly. This could be due to dehydration, infection, or chronic kidney disease. It is important to follow up with your doctor.",
+                dangerNote: "Untreated high creatinine can lead to kidney failure. Take this seriously."
+            },
+            {
+                aliases: ['platelet', 'plt'],
+                unit: '/μL', min: 150000, max: 400000, criticalLow: 50000, criticalHigh: 1000000,
+                displayName: 'Platelet Count',
+                explainLow: "Low platelets can cause easy bruising or bleeding. It may be due to infections like dengue, certain medications, or immune system problems.",
+                explainHigh: "High platelets can increase the risk of unwanted blood clots. This could be caused by an infection, iron deficiency, or a bone marrow disorder.",
+                dangerNote: "If your platelets are very low, avoid injuries. Seek emergency care for unusual bleeding."
+            }
+        ];
+// Tamil translations for test names and statuses
+const translations_ta = {
+    'Haemoglobin': 'ஹீமோகுளோபின்',
+    'WBC Count': 'வெள்ளை இரத்த அணுக்கள்',
+    'Fasting Glucose': 'உணவுக்கு முன் சர்க்கரை',
+    'Creatinine': 'கிரியாட்டினின்',
+    'Platelet Count': 'தட்டு அணுக்கள்',
+    'Normal': 'சாதாரணம்',
+    'Low': 'குறைவு',
+    'High': 'அதிகம்',
+    'CRITICAL LOW': 'மிகக் குறைவு (ஆபத்து)',
+    'CRITICAL HIGH': 'மிக அதிகம் (ஆபத்து)',
+    'Not Found': 'காணப்படவில்லை',
+    'g/dL': 'கிராம் / டெசிலிட்டர்',
+    '/μL': 'ஒரு மைக்ரோலிட்டருக்கு',
+    'mg/dL': 'மில்லிகிராம் / டெசிலிட்டர்',
+    'your': 'உங்கள்',
+    'is': 'உள்ளது',
+    'which is': 'இது',
+    'please consult doctor': 'மருத்துவரை அணுகவும்',
+    'explanations': 'விளக்கங்கள்: ',
+    'questions': 'மருத்துவரிடம் கேட்க வேண்டிய கேள்விகள்: '
+};
+
+// Malayalam translations
+const translations_ml = {
+    'Haemoglobin': 'ഹീമോഗ്ലോബിൻ',
+    'WBC Count': 'വെളുത്ത രക്താണുക്കൾ',
+    'Fasting Glucose': 'ഉപവാസ രക്ത ഷുഗർ',
+    'Creatinine': 'ക്രിയാറ്റിനിൻ',
+    'Platelet Count': 'പ്ലേറ്റ്ലെറ്റ് കൗണ്ട്',
+    'Normal': 'സാധാരണം',
+    'Low': 'കുറവ്',
+    'High': 'കൂടുതൽ',
+    'CRITICAL LOW': 'വളരെ കുറവ് (അപകടം)',
+    'CRITICAL HIGH': 'വളരെ കൂടുതൽ (അപകടം)',
+    'Not Found': 'കണ്ടെത്തിയില്ല',
+    'g/dL': 'ഗ്രാം / ഡെസിലിറ്റർ',
+    '/μL': 'ഒരു മൈക്രോലിറ്ററിൽ',
+    'mg/dL': 'മില്ലിഗ്രാം / ഡെസിലിറ്റർ',
+    'your': 'നിങ്ങളുടെ',
+    'is': 'ആണ്',
+    'which is': 'അത്',
+    'please consult doctor': 'ഡോക്ടറെ സമീപിക്കുക',
+    'explanations': 'വിശദീകരണങ്ങൾ: ',
+    'questions': 'ഡോക്ടറോട് ചോദിക്കേണ്ട ചോദ്യങ്ങൾ: '
+};
+
+        // ---------- QUESTION BANK ----------
+        const questionBank = {
+            'Haemoglobin': {
+                Low: ["What is causing my low haemoglobin?", "Should I take iron supplements or change my diet?", "How often should I check my haemoglobin?"],
+                High: ["What could be causing my high haemoglobin?", "Do I need to worry about dehydration or heart issues?", "Should I repeat the test soon?"]
+            },
+            'WBC Count': {
+                Low: ["Why is my white blood cell count low?", "Could this be due to an infection or medication?", "What precautions should I take to avoid infections?"],
+                High: ["What infection or inflammation might be causing this?", "Do I need further tests like a blood culture?", "Should I see a specialist?"]
+            },
+            'Fasting Glucose': {
+                Low: ["Is my blood sugar too low? What symptoms should I watch for?", "Should I change my meal timing or medication?"],
+                High: ["Do I have diabetes or pre-diabetes?", "What diet and exercise do you recommend?", "Do I need medication or insulin?"]
+            },
+            'Creatinine': {
+                Low: ["Is my kidney function normal if creatinine is low?", "Could this be related to my diet or muscle mass?"],
+                High: ["What is wrong with my kidneys?", "Do I need a nephrologist?", "What lifestyle changes can protect my kidneys?"]
+            },
+            'Platelet Count': {
+                Low: ["Why are my platelets low? Could it be dengue or an infection?", "What symptoms of bleeding should I watch for?", "Do I need a follow-up test?"],
+                High: ["What could cause high platelets?", "Should I be concerned about blood clots?", "Do I need to see a blood specialist?"]
+            }
+        };
+
+        // ---------- CAMERA ----------
+        async function startCamera() {
+            const constraints = [
+                { video: { facingMode: 'environment' } },
+                { video: { facingMode: 'user' } },
+                { video: true }
+            ];
+            for (let constraint of constraints) {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia(constraint);
+                    video.srcObject = stream;
+                    return;
+                } catch (err) { }
+            }
+            output.innerText = 'Camera access denied or no camera found.';
+        }
+        startCamera();
+
+        // ---------- 1. WEBCAM CAPTURE (with sharpening) ----------
+        async function captureAndScan() {
+            output.innerText = 'Checking camera...';
+            if (video.readyState < 2) { output.innerText = 'Camera not ready.'; return; }
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            if (canvas.width === 0 || canvas.height === 0) { output.innerText = 'Camera not available.'; return; }
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+
+            // Apply sharpening filter
+            let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            let src = new Uint8ClampedArray(imgData.data);
+            let width = canvas.width, height = canvas.height;
+            let kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+            let dst = new Uint8ClampedArray(src.length);
+            for (let y = 1; y < height - 1; y++) {
+                for (let x = 1; x < width - 1; x++) {
+                    let idx = (y * width + x) * 4;
+                    for (let c = 0; c < 3; c++) {
+                        let val = 
+                            kernel[0]*src[((y-1)*width + (x-1))*4 + c] +
+                            kernel[1]*src[((y-1)*width + x)*4 + c] +
+                            kernel[2]*src[((y-1)*width + (x+1))*4 + c] +
+                            kernel[3]*src[(y*width + (x-1))*4 + c] +
+                            kernel[4]*src[idx + c] +
+                            kernel[5]*src[(y*width + (x+1))*4 + c] +
+                            kernel[6]*src[((y+1)*width + (x-1))*4 + c] +
+                            kernel[7]*src[((y+1)*width + x)*4 + c] +
+                            kernel[8]*src[((y+1)*width + (x+1))*4 + c];
+                        dst[idx + c] = Math.min(255, Math.max(0, val));
+                    }
+                    dst[idx + 3] = 255;
+                }
+            }
+            imgData.data.set(dst);
+            ctx.putImageData(imgData, 0, 0);
+
+            output.innerHTML = '<h3>📸 Sharpened Webcam Image</h3><img src="' + canvas.toDataURL() + '" style="max-width:300px;"><br><p>🔍 Running OCR...</p>';
+            await runOCRAndSimplify(canvas.toDataURL('image/png'));
+        }
+
+        // ---------- 2. FILE UPLOAD ----------
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            output.innerText = 'Reading file...';
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = async function() {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    // Contrast enhancement
+                    let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    let d = imgData.data;
+                    for (let i = 0; i < d.length; i += 4) {
+                        let gray = d[i]*0.3 + d[i+1]*0.59 + d[i+2]*0.11;
+                        gray = gray > 128 ? 255 : 0;
+                        d[i] = d[i+1] = d[i+2] = gray;
+                    }
+                    ctx.putImageData(imgData, 0, 0);
+                    output.innerHTML = '<h3>📁 Uploaded & Enhanced Image</h3><img src="' + canvas.toDataURL() + '" style="max-width:300px;"><br><p>🔍 Running OCR...</p>';
+                    await runOCRAndSimplify(canvas.toDataURL('image/png'));
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // ---------- 3. SAMPLE REPORT ----------
+        function loadSample() {
+            const sampleText = `ABC DIAGNOSTIC CENTRE
+COMPLETE BLOOD COUNT
+Patient: Mr. Kumar   Age: 65
+Haemoglobin 12.5 g/dL
+WBC Count 11000 /uL
+Fasting Glucose 125 mg/dL
+Creatinine 0.9 mg/dL
+Platelet Count 250000 /uL`;
+	    window.lastRawText = sampleText;
+            output.innerHTML = simplifyReport(sampleText, false);
+        }
+
+        // ---------- OCR PIPELINE ----------
+        async function runOCRAndSimplify(imageDataUrl) {
+            try {
+                const { data: { text } } = await Tesseract.recognize(
+                    imageDataUrl,
+                    'eng',
+                    { logger: m => { if (m.status === 'recognizing text') output.innerHTML += ' ' + Math.round(m.progress*100) + '%'; } }
+                );
+                const rawText = text || 'No text found.';
+		window.lastRawText = rawText;
+                output.innerHTML = simplifyReport(rawText, true);
+            } catch (e) {
+                output.innerText = 'OCR failed: ' + e.toString();
+            }
+        }
+
+        // ---------- GET EXPLANATION ----------
+        function getExplanation(testDisplayName, status) {
+            const test = knowledge.find(t => t.displayName === testDisplayName);
+            if (!test) return null;
+            if (status === 'Low' && test.explainLow) return test.explainLow + ' ' + (test.dangerNote || '');
+            if (status === 'High' && test.explainHigh) return test.explainHigh + ' ' + (test.dangerNote || '');
+            if (status === 'Normal') return test.displayName + ' is normal. No action is needed.';
+            return null;
+        }
+
+        // ---------- VOICE READ-ALOUD ----------
+	function speakResults(lang) {
+    // Select translation dictionary
+    let trans = null;
+    if (lang === 'ta-IN') trans = translations_ta;
+    else if (lang === 'ml-IN') trans = translations_ml;
+
+    let speechText = '';
+
+    for (let testName in lastResults) {
+        const res = lastResults[testName];
+
+        let name = (trans && trans[testName]) ? trans[testName] : testName;
+        let status = (trans && trans[res.status]) ? trans[res.status] : res.status;
+
+        let unitSpoken = res.unit;
+        if (trans && trans[res.unit]) {
+            unitSpoken = trans[res.unit];
+        } else if (res.unit === 'g/dL') {
+            unitSpoken = 'grams per deciliter';
+        } else if (res.unit === '/μL' || res.unit === '/uL') {
+            unitSpoken = 'per microliter';
+        } else if (res.unit === 'mg/dL') {
+            unitSpoken = 'milligrams per deciliter';
+        }
+
+        let sentence = '';
+        if (trans) {
+            let yourWord = trans['your'] || 'Your';
+            let isWord = trans['is'] || 'is';
+            sentence = yourWord + ' ' + name + ' ' + res.value + ' ' + unitSpoken + ' ' + isWord + ' ' + status + '. ';
+        } else {
+            sentence = 'Your ' + name + ' is ' + res.value + ' ' + unitSpoken + ', which is ' + status + '. ';
+        }
+        speechText += sentence;
+    }
+
+    if (collectedExplanations.length > 0) {
+        speechText += (trans && trans['explanations']) ? trans['explanations'] : ' Explanations: ';
+        for (let exp of collectedExplanations) {
+            speechText += exp.explanation + ' ';
+        }
+    }
+
+    if (collectedQuestions.length > 0) {
+        speechText += (trans && trans['questions']) ? trans['questions'] : ' Questions to ask your doctor: ';
+        for (let q of collectedQuestions) {
+            speechText += q + ' ';
+        }
+    }
+
+    if (trans && trans['please consult doctor']) {
+        speechText += trans['please consult doctor'] + '. ';
+    } else {
+        speechText += 'Please consult your doctor. ';
+    }
+
+    if (speechText !== '') {
+        const utterance = new SpeechSynthesisUtterance(speechText);
+        utterance.lang = lang;
+        utterance.rate = 0.9;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+    }
+}
+                 // ---------- SIMPLIFICATION ENGINE ----------
+        let lastResults = {};
+        let collectedQuestions = [];
+        let collectedExplanations = [];
+
+        function simplifyReport(rawText, showDebug = true) {
+            let resultHtml = '<h3>📄 Raw Extracted Text</h3><pre>' + rawText + '</pre>';
+            resultHtml += '<h3>📋 Simplified Results</h3><ul>';
+
+            let cleanText = rawText.replace(/[^\w\s.\/\-]/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+            const lines = cleanText.split('.').join(' ').split(/\r?\n/);
+            let debugHtml = '';
+
+            function extractNumberFromTokens(tokens) {
+                let firstNum = null;
+                for (let i = 0; i < tokens.length; i++) {
+                    let tok = tokens[i];
+                    if (/^\d+(\.\d+)?$/.test(tok)) {
+                        if (firstNum === null) {
+                            firstNum = tok;
+                            if (i + 1 < tokens.length) {
+                                let nextTok = tokens[i + 1];
+                                if (/^\d+$/.test(nextTok) && !firstNum.includes('.')) {
+                                    return { firstNum, secondNum: nextTok };
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if (firstNum !== null) break;
+                }
+                return { firstNum, secondNum: null };
+            }
+
+            lastResults = {};
+            collectedQuestions = [];
+            collectedExplanations = [];
+
+            for (let test of knowledge) {
+                let foundValue = null;
+                let debugLine = '';
+
+                // Strategy 1: whole flattened text
+                for (let alias of test.aliases) {
+                    let idx = cleanText.indexOf(alias);
+                    if (idx !== -1) {
+                        let after = cleanText.substring(idx + alias.length).trim();
+                        let tokens = after.split(/\s+/);
+                        let { firstNum, secondNum } = extractNumberFromTokens(tokens);
+                        if (firstNum) {
+                            if (secondNum) {
+                                foundValue = parseFloat(firstNum + '.' + secondNum);
+                                debugLine = '✔ Merged: ' + firstNum + '.' + secondNum + ' = ' + foundValue;
+                            } else {
+                                foundValue = parseFloat(firstNum);
+                                debugLine = '✔ Found: ' + foundValue;
+                            }
+                        } else {
+                            debugLine = '❌ Alias found but no number';
+                        }
+                        break;
+                    }
+                }
+
+                // Strategy 2: line-by-line
+                if (foundValue === null) {
+                    for (let line of lines) {
+                        let lowerLine = line.toLowerCase();
+                        for (let alias of test.aliases) {
+                            if (lowerLine.includes(alias)) {
+                                let after = lowerLine.substring(lowerLine.indexOf(alias) + alias.length).trim();
+                                let tokens = after.split(/\s+/);
+                                let { firstNum, secondNum } = extractNumberFromTokens(tokens);
+                                if (firstNum) {
+                                    if (secondNum) {
+                                        foundValue = parseFloat(firstNum + '.' + secondNum);
+                                        debugLine = '✔ (line) Merged: ' + firstNum + '.' + secondNum;
+                                    } else {
+                                        foundValue = parseFloat(firstNum);
+                                        debugLine = '✔ (line) Found: ' + foundValue;
+                                    }
+                                } else {
+                                    debugLine = '❌ (line) Alias found but no number';
+                                }
+                                break;
+                            }
+                        }
+                        if (foundValue !== null) break;
+                    }
+                }
+
+                if (foundValue === null) {
+                    debugLine = debugLine || '❌ No number found for ' + test.displayName;
+                }
+
+                if (showDebug) debugHtml += (debugLine || '') + '<br>';
+
+                if (foundValue !== null && !isNaN(foundValue)) {
+                    let status = '', cssClass = '';
+                    let isCritical = false;
+
+                    if (foundValue >= test.min && foundValue <= test.max) {
+                        status = 'Normal'; cssClass = 'normal';
+                    } else {
+                        if (test.criticalLow && foundValue < test.criticalLow) {
+                            status = 'CRITICAL LOW'; cssClass = 'critical'; isCritical = true;
+                        } else if (test.criticalHigh && foundValue > test.criticalHigh) {
+                            status = 'CRITICAL HIGH'; cssClass = 'critical'; isCritical = true;
+                        } else if (foundValue < test.min) {
+                            status = 'Low'; cssClass = 'low';
+                        } else {
+                            status = 'High'; cssClass = 'high';
+                        }
+                    }
+
+                    resultHtml += `<li class="${cssClass}"><strong>${test.displayName}:</strong> ${foundValue} ${test.unit} (${status})</li>`;
+
+                    lastResults[test.displayName] = { value: foundValue, status: status, unit: test.unit };
+                    if (status !== 'Normal') {
+                        if (questionBank[test.displayName] && questionBank[test.displayName][status]) {
+                            for (let q of questionBank[test.displayName][status]) {
+                                collectedQuestions.push(q);
+                            }
+                        }
+                        let explanation = getExplanation(test.displayName, status);
+                        if (explanation) {
+                            collectedExplanations.push({ name: test.displayName, explanation: explanation });
+                        }
+                    }
+
+                    if (isCritical) {
+                        resultHtml += `<div class="critical-alert">🚨 <strong>URGENT:</strong> ${test.displayName} is at a dangerous level. Please seek medical attention immediately.</div>`;
+                        if (test.dangerNote) {
+                            resultHtml += `<div class="danger-note">⚠️ ${test.dangerNote}</div>`;
+                        }
+                    }
+                } else {
+                    resultHtml += `<li class="notfound"><strong>${test.displayName}:</strong> Not found in report</li>`;
+                }
+            }
+
+            resultHtml += '</ul>';
+
+            if (collectedQuestions.length > 0) {
+                resultHtml += '<h3>❓ Questions to Ask Your Doctor</h3><ul>';
+                for (let q of collectedQuestions) {
+                    resultHtml += `<li>💬 ${q}</li>`;
+                }
+                resultHtml += '</ul>';
+            }
+
+            if (collectedExplanations.length > 0) {
+                resultHtml += '<h3>🔍 Why Is This Happening?</h3>';
+                for (let exp of collectedExplanations) {
+                    resultHtml += `<p><strong>${exp.name}:</strong> ${exp.explanation}</p>`;
+                }
+            }
+
+            // Add language buttons for read-aloud
+            resultHtml += '<h3>🔊 Read Aloud</h3>';
+            resultHtml += '<button class="lang-btn" onclick="speakResults(\'ta-IN\')">தமிழ்</button>';
+            resultHtml += '<button class="lang-btn" onclick="speakResults(\'en-IN\')">English</button>';
+            resultHtml += '<button class="lang-btn" onclick="speakResults(\'ml-IN\')">മലയാളം</button>';
+	resultHtml += '<hr>';
+	resultHtml += '<h3>🤖 AI Explain (Internet required)</h3>';
+	resultHtml += '<button class="lang-btn" style="background:#17a2b8;" onclick="aiExplain()">🤖 Explain with AI</button>';
+
+            if (showDebug) resultHtml += '<div class="debug"><strong>🔍 Debug Info:</strong><br>' + debugHtml + '</div>';
+            resultHtml += '<p><em>⚠️ This is not medical advice. Always consult a doctor.</em></p>';
+            return resultHtml;
+        }
+	// ---------- AI EXPLAIN USING GROQ ----------
+async function aiExplain() {
+    const rawText = window.lastRawText || '';
+
+    if (!rawText || rawText.trim() === '') {
+        alert('No report text found. Please scan or load a sample first.');
+        return;
+    }
+
+    const aiDiv = document.createElement('div');
+    aiDiv.id = 'aiResult';
+    aiDiv.innerHTML = '<p style="color:#17a2b8;">🤖 AI is thinking... please wait (5-15 seconds).</p>';
+    output.appendChild(aiDiv);
+
+    const apiKey = 'YOUR_GROQ_API_KEY_HERE'; // <-- put your real key here
+
+   const prompt = `You are a kind medical assistant. Explain this blood test report in very simple, patient-friendly language. Use plain text only. Do NOT use markdown tables, asterisks, or hashtags. Just write simple paragraphs in a warm tone. Mention abnormal values and what to do next. Do NOT diagnose. Always advise consulting a doctor.\n\nReport:\n${lastRawText}`;s
+    try {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + apiKey,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model:'openai/gpt-oss-20b',
+                messages: [
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.3
+            })
+        });
+
+        const data = await response.json();
+
+if (!response.ok) {
+    aiDiv.innerHTML = '<p style="color:red;">❌ API Error: ' + JSON.stringify(data) + '</p>';
+    return;
+}
+
+if (data.choices && data.choices.length > 0) {
+            const aiText = data.choices[0].message.content;
+            aiDiv.innerHTML = '<h3>🤖 AI Plain-Language Explanation</h3><p>' + aiText.replace(/\n/g, '<br>') + '</p>';
+        } else {
+            aiDiv.innerHTML = '<p style="color:red;">❌ AI did not return a valid response. Please check your API key or internet.</p>';
+        }
+    } catch (err) {
+        aiDiv.innerHTML = '<p style="color:red;">❌ Error calling AI: ' + err.message + '</p>';
+    }
+}
+    </script>
+</body>
+</html>

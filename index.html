@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedVoice – AI Health Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #e0f7fa, #f3e5f5);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
+        }
+        .card {
+            background: white;
+            padding: 50px 40px;
+            border-radius: 30px;
+            box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+            max-width: 600px;
+            width: 100%;
+        }
+        .logo {
+            font-size: 70px;
+            margin-bottom: 10px;
+        }
+        h1 {
+            color: #0077b6;
+            font-size: 44px;
+            margin-bottom: 10px;
+        }
+        .tagline {
+            font-size: 20px;
+            color: #333;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+        button {
+            padding: 18px 50px;
+            font-size: 24px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 8px 20px rgba(0,123,255,0.4);
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            background: #0056b3;
+            transform: translateY(-3px);
+            box-shadow: 0 12px 25px rgba(0,123,255,0.5);
+        }
+        .footer {
+            margin-top: 30px;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">🩺</div>
+        <h1>MedVoice</h1>
+        <p class="tagline">Your medical report, explained in your own language.<br>Simple. Voice-first. Understand your health.</p>
+        <button onclick="window.location.href='scanner.html'">Start Scan</button>
+    </div>
+    <div class="footer">
+        AI-powered health literacy · 
+    </div>
+</body>
+</html>
