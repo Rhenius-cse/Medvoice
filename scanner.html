@@ -291,70 +291,56 @@ Platelet Count 250000 /uL`;
 
         // ---------- VOICE READ-ALOUD ----------
 	function speakResults(lang) {
-    // Select translation dictionary
-    let trans = null;
-    if (lang === 'ta-IN') trans = translations_ta;
-    else if (lang === 'ml-IN') trans = translations_ml;
+    // Check if the device actually has the voice for this language
+    const voices = window.speechSynthesis.getVoices();
+    const hasVoice = voices.some(v => v.lang.startsWith(lang.split('-')[0]));
 
-    let speechText = '';
+    let actualLang = lang;
+    // If it doesn't have the voice, fallback to English text
+    if (!hasVoice && lang !== 'en-IN') {
+        alert("⚠️ Your device does not have the " + lang + " voice installed. Falling back to English.");
+        actualLang = 'en-IN';
+    }
 
-    for (let testName in lastResults) {
-        const res = lastResults[testName];
+    let text = '';
 
-        let name = (trans && trans[testName]) ? trans[testName] : testName;
-        let status = (trans && trans[res.status]) ? trans[res.status] : res.status;
-
-        let unitSpoken = res.unit;
-        if (trans && trans[res.unit]) {
-            unitSpoken = trans[res.unit];
-        } else if (res.unit === 'g/dL') {
-            unitSpoken = 'grams per deciliter';
-        } else if (res.unit === '/μL' || res.unit === '/uL') {
-            unitSpoken = 'per microliter';
-        } else if (res.unit === 'mg/dL') {
-            unitSpoken = 'milligrams per deciliter';
-        }
-
-        let sentence = '';
-        if (trans) {
-            let yourWord = trans['your'] || 'Your';
-            let isWord = trans['is'] || 'is';
-            sentence = yourWord + ' ' + name + ' ' + res.value + ' ' + unitSpoken + ' ' + isWord + ' ' + status + '. ';
+    // Build the text based on the actual language we will speak
+    for (const name in lastResults) {
+        const r = lastResults[name];
+        
+        if (actualLang === 'en-IN') {
+            // English sentence
+            text += `Your ${name} is ${r.value} ${r.unit}, which is ${r.status}. `;
         } else {
-            sentence = 'Your ' + name + ' is ' + res.value + ' ' + unitSpoken + ', which is ' + status + '. ';
-        }
-        speechText += sentence;
-    }
-
-    if (collectedExplanations.length > 0) {
-        speechText += (trans && trans['explanations']) ? trans['explanations'] : ' Explanations: ';
-        for (let exp of collectedExplanations) {
-            speechText += exp.explanation + ' ';
+            // Tamil or Malayalam sentence
+            const trans = actualLang === 'ta-IN' ? translations_ta : translations_ml;
+            const n = trans[name] ? trans[name] : name;
+            const s = trans[r.status] ? trans[r.status] : r.status;
+            const u = trans[r.unit] ? trans[r.unit] : r.unit;
+            text += `${trans['your']||'Your'} ${n} ${r.value} ${u} ${trans['is']||'is'} ${s}. `;
         }
     }
 
-    if (collectedQuestions.length > 0) {
-        speechText += (trans && trans['questions']) ? trans['questions'] : ' Questions to ask your doctor: ';
-        for (let q of collectedQuestions) {
-            speechText += q + ' ';
-        }
-    }
-
-    if (trans && trans['please consult doctor']) {
-        speechText += trans['please consult doctor'] + '. ';
+    // Add closing advice
+    if (actualLang === 'en-IN') {
+        text += 'Please consult your doctor.';
     } else {
-        speechText += 'Please consult your doctor. ';
+        const trans = actualLang === 'ta-IN' ? translations_ta : translations_ml;
+        text += trans['please consult doctor'] + '.';
     }
 
-    if (speechText !== '') {
-        const utterance = new SpeechSynthesisUtterance(speechText);
-        utterance.lang = lang;
-        utterance.rate = 0.9;
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
-    }
-}
-                 // ---------- SIMPLIFICATION ENGINE ----------
+    // Speak the text
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = actualLang;
+    
+    // Force the exact voice if available
+    const selectedVoice = voices.find(v => v.lang === actualLang || v.lang.replace('_','-') === actualLang);
+    if (selectedVoice) u.voice = selectedVoice;
+
+    u.rate = 0.9;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+}                 // ---------- SIMPLIFICATION ENGINE ----------
         let lastResults = {};
         let collectedQuestions = [];
         let collectedExplanations = [];
