@@ -291,55 +291,57 @@ Platelet Count 250000 /uL`;
 
         // ---------- VOICE READ-ALOUD ----------
 	function speakResults(lang) {
-    // Check if the device actually has the voice for this language
-    const voices = window.speechSynthesis.getVoices();
-    const hasVoice = voices.some(v => v.lang.startsWith(lang.split('-')[0]));
+    const synth = window.speechSynthesis;
 
-    let actualLang = lang;
-    // If it doesn't have the voice, fallback to English text
-    if (!hasVoice && lang !== 'en-IN') {
-        alert("⚠️ Your device does not have the " + lang + " voice installed. Falling back to English.");
-        actualLang = 'en-IN';
-    }
+    function doSpeak() {
+        const voices = synth.getVoices();
 
-    let text = '';
-
-    // Build the text based on the actual language we will speak
-    for (const name in lastResults) {
-        const r = lastResults[name];
-        
-        if (actualLang === 'en-IN') {
-            // English sentence
-            text += `Your ${name} is ${r.value} ${r.unit}, which is ${r.status}. `;
-        } else {
-            // Tamil or Malayalam sentence
-            const trans = actualLang === 'ta-IN' ? translations_ta : translations_ml;
-            const n = trans[name] ? trans[name] : name;
-            const s = trans[r.status] ? trans[r.status] : r.status;
-            const u = trans[r.unit] ? trans[r.unit] : r.unit;
-            text += `${trans['your']||'Your'} ${n} ${r.value} ${u} ${trans['is']||'is'} ${s}. `;
+        // Check if we actually have the voice for this language
+        let useEnglish = (lang === 'en-IN');
+        if (!useEnglish) {
+            const foundVoice = voices.find(v => v.lang === lang || v.lang.replace('_', '-') === lang);
+            if (!foundVoice) {
+                useEnglish = true; // Voice missing → fallback to English TEXT
+            }
         }
+
+        let text = '';
+
+        for (const name in lastResults) {
+            const r = lastResults[name];
+            if (useEnglish) {
+                // Plain English sentence
+                text += `Your ${name} is ${r.value} ${r.unit}, which is ${r.status}. `;
+            } else {
+                // Tamil or Malayalam sentence
+                const trans = (lang === 'ta-IN') ? translations_ta : translations_ml;
+                const n = trans[name] || name;
+                const s = trans[r.status] || r.status;
+                const u = trans[r.unit] || r.unit;
+                text += `${trans['your'] || 'Your'} ${n} ${r.value} ${u} ${trans['is'] || 'is'} ${s}. `;
+            }
+        }
+
+        if (useEnglish) {
+            text += 'Please consult your doctor.';
+        } else {
+            const trans = (lang === 'ta-IN') ? translations_ta : translations_ml;
+            text += trans['please consult doctor'] + '.';
+        }
+
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = useEnglish ? 'en-IN' : lang;
+        u.rate = 0.9;
+        synth.cancel();
+        synth.speak(u);
     }
 
-    // Add closing advice
-    if (actualLang === 'en-IN') {
-        text += 'Please consult your doctor.';
+    // Wait for voices to load before deciding
+    if (synth.getVoices().length === 0) {
+        synth.onvoiceschanged = doSpeak;
     } else {
-        const trans = actualLang === 'ta-IN' ? translations_ta : translations_ml;
-        text += trans['please consult doctor'] + '.';
+        doSpeak();
     }
-
-    // Speak the text
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = actualLang;
-    
-    // Force the exact voice if available
-    const selectedVoice = voices.find(v => v.lang === actualLang || v.lang.replace('_','-') === actualLang);
-    if (selectedVoice) u.voice = selectedVoice;
-
-    u.rate = 0.9;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(u);
 }
 // ---------- SIMPLIFICATION ENGINE ----------
         let lastResults = {};
